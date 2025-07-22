@@ -1,0 +1,7 @@
+# Env files
+.env
+.vscode/
+# Go modules & builds
+go.sum
+/bin/
+/pkg/
