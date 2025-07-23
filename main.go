@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -40,24 +41,26 @@ var words = []string{
 	"able",
 }
 
+var wordCount int = 50
+
 type model struct {
-	prompt            string
-	userText          []string
-	startTime         time.Time
-	lastPress         time.Time
-	totalKeystrokes   int
-	correctKeystrokes int
+	prompt          string
+	userText        string
+	startTime       time.Time
+	lastPress       time.Time
+	totalKeystrokes int
+	width           int
 }
 
 func initialModel() model {
 	prompt := ""
-	for range 20 {
+	for range wordCount {
 		prompt += words[rand.Intn(len(words))] + " "
 	}
 
 	return model{
 		prompt:   prompt,
-		userText: []string{},
+		userText: "",
 	}
 }
 
@@ -67,41 +70,37 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "ctrl+r":
 			newPrompt := ""
-			for range 20 {
+			for range wordCount {
 				newPrompt += words[rand.Intn(len(words))] + " "
 			}
 			m.prompt = newPrompt
-			m.userText = []string{}
-			m.correctKeystrokes = 0
+			m.userText = ""
 			m.totalKeystrokes = 0
+			m.startTime = time.Time{}
+			m.lastPress = time.Time{}
 		case "backspace":
-			if len(m.prompt) <= len(m.userText) {
-				return m, nil
-			}
-			if len(m.userText) > 0 {
+			if len(m.userText) > 0 && len(m.userText) < len(m.prompt) {
 				m.userText = m.userText[:len(m.userText)-1]
 			}
 		default:
-			if len(m.prompt) <= len(m.userText) {
-				return m, nil
-			}
-			m.lastPress = time.Now()
-			if m.totalKeystrokes == 0 {
-				m.startTime = time.Now()
-			}
-			m.totalKeystrokes++
-			text := msg.String()
-			if len(m.userText) < len(m.prompt) && m.prompt[len(m.userText)] == text[0] {
-				m.userText = append(m.userText, green.Render(text))
-				m.correctKeystrokes++
-			} else {
-				m.userText = append(m.userText, red.Render(text))
+			if len(msg.String()) == 1 {
+				if len(m.userText) < len(m.prompt) {
+					if m.totalKeystrokes == 0 {
+						m.startTime = time.Now()
+					}
+					m.lastPress = time.Now()
+					m.totalKeystrokes++
+					m.userText += msg.String()
+				}
 			}
 		}
 	}
@@ -109,13 +108,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	s := "Type this:\n\n"
-	s += m.prompt
-	s += "\n\n"
-	for _, l := range m.userText {
-		s += l
+	var correctKeystrokes int
+	var styledPrompt strings.Builder
+	for i, char := range m.prompt {
+		if i < len(m.userText) {
+			if m.userText[i] == byte(char) {
+				styledPrompt.WriteString(green.Render(string(char)))
+				correctKeystrokes++
+			} else {
+				styledPrompt.WriteString(red.Render(string(char)))
+			}
+		} else {
+			styledPrompt.WriteString(string(char))
+		}
 	}
-	s += "\n\n"
 
 	elapsed := 0.0
 	if !m.startTime.IsZero() {
@@ -125,39 +131,60 @@ func (m model) View() string {
 	wpm := 0.0
 	if elapsed > 0 {
 		minutes := elapsed / 60.0
-		wpm = (float64(m.correctKeystrokes) / 5.0) / minutes
+		wpm = (float64(correctKeystrokes) / 5.0) / minutes
 	}
 
 	accPct := 0.0
 	if m.totalKeystrokes > 0 {
-		accPct = float64(m.correctKeystrokes) / float64(m.totalKeystrokes) * 100.0
+		accPct = float64(correctKeystrokes) / float64(m.totalKeystrokes) * 100.0
 	}
 
 	cpm := 0.0
 	if elapsed > 0 {
-		cpm = (float64(m.correctKeystrokes) / elapsed) * 60.0
+		cpm = float64(correctKeystrokes) / elapsed * 60.0
 	}
 
+	mistakes := m.totalKeystrokes - correctKeystrokes
+
 	stats := fmt.Sprintf(
-		"Time: %.0fs | WPM: %.1f | Accuracy: %.1f%%\nCPM: %.1f",
+		"Time: %.0fs | WPM: %.1f | Accuracy: %.1f%% | CPM: %.1f | Mistakes: %d",
 		elapsed,
 		wpm,
 		accPct,
 		cpm,
+		mistakes,
 	)
-	s += stats
-	s += "\n"
-	if len(m.prompt) <= len(m.userText) {
-		s += "finished"
-	}
 
-	return s
+	promptStyle := lipgloss.NewStyle().
+		Width(m.width-4).
+		Border(lipgloss.RoundedBorder(), true).
+		Align(lipgloss.Center).
+		Padding(1).
+		Margin(1)
+
+	promptBox := promptStyle.Render(styledPrompt.String())
+
+	basicStyle := lipgloss.NewStyle().
+		Width(m.width - 2).
+		Align(lipgloss.Center).
+		Margin(1)
+
+	statsStyled := basicStyle.Render(stats)
+	infoStyled := basicStyle.Render("ctrl+r to restart, ctrl+c to quit")
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		promptBox,
+		statsStyled,
+		infoStyled,
+		"\n",
+	)
 }
 
 func main() {
 	p := tea.NewProgram(initialModel())
 	if _, err := p.Run(); err != nil {
-		fmt.Printf("Alas, there's been an error: %v", err)
+		fmt.Printf("Error occurred: %v", err)
 		os.Exit(1)
 	}
 }
+
